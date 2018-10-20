@@ -161,6 +161,17 @@ class Connection(object):
         except Exception as e:
             pass
 
+    def height(self):
+        return self.command('statusjson')['blocks']
+
+    def mode(self):
+        stat = self.command('statusjson')
+        if stat['testnet']:
+            return 'testnet'
+        if stat['regnet']:
+            return 'regnet'
+        return 'mainnet'
+
 
 if __name__ == "__main__":
     print("I'm a module, can't run!")
