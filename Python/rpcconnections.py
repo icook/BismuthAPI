@@ -5,10 +5,19 @@ This file is no more compatible with the Bismuth code, it's been converted to a 
 EggPool 2018
 """
 
+import os
+import hashlib
+import re
+import base64
 import json
 import socket
 import time
 import threading
+
+from decimal import Decimal
+from Cryptodome.Signature import PKCS1_v1_5
+from Cryptodome.PublicKey import RSA
+from Cryptodome.Hash import SHA
 
 # Logical timeout
 LTIMEOUT = 45
@@ -17,6 +26,45 @@ SLEN = 10
 
 
 __version__ = '0.1.7'
+
+
+class Wallet(object):
+    def __init__(self, key):
+        self.key = key
+
+    @property
+    def priv_key(self):
+        return self.key.export_key().decode("utf-8")
+
+    @property
+    def pub_key(self):
+        return self.key.publickey().export_key().decode("utf-8")
+
+    @property
+    def address(self):
+        # hashed public key
+        return hashlib.sha224(self.pub_key.encode("utf-8")).hexdigest()
+
+    def save(self, path):
+        output = json.dumps({
+            'Private Key': self.priv_key,
+            'Public Key': self.priv_key,
+            'Address': self.address,
+        })
+        if os.path.isfile(path):
+            raise ValueError("file {} already exists, abort".format(path))
+        fo = open(path, 'w')
+        fo.write(output)
+
+    @classmethod
+    def load(cls, path):
+        wallet_dict = json.load(open(path))
+        return cls(RSA.import_key(wallet_dict['Private Key']))
+
+    @classmethod
+    def generate(cls):
+        key = RSA.generate(4096)
+        return cls(key)
 
 
 class Connection(object):
@@ -171,6 +219,64 @@ class Connection(object):
         if stat['regnet']:
             return 'regnet'
         return 'mainnet'
+
+    def address_validate(self, address):
+        if re.match ('[abcdef0123456789]{56}', address):
+            return True
+        else:
+            return False
+
+    def send(self, wallet, recipient, amount, openfield='', operation=0):
+        if (len(wallet.pub_key)) != 271 and (len(wallet.pub_key)) != 799:
+            raise ValueError("Invalid public key length: {}".format(len(wallet.pub_key)))
+
+        public_key_hashed = base64.b64encode(wallet.pub_key.encode('utf-8'))
+
+        print("Sending from address: {}".format(wallet.address))
+
+        # Pulled from essentials.py
+        fee = Decimal("0.01") + (Decimal(len(openfield)) / Decimal("100000"))  # 0.01 dust
+        print("Paying Fee: {}".format(fee))
+
+        if float(amount) < 0:
+            raise Exception("Cannot send negative amounts")
+
+        if len(str(recipient)) != 56:
+            raise Exception("Wrong address length")
+
+        timestamp = '%.2f' % time.time()
+        sig_dat = (
+            str(timestamp),
+            str(wallet.address),
+            str(recipient),
+            '%.8f' % float(amount),
+            str(operation),
+            str(openfield))
+
+        sig_dat_hash = SHA.new(str(sig_dat).encode("utf-8"))
+        signer = PKCS1_v1_5.new(wallet.key)
+        signature = signer.sign(sig_dat_hash)
+        signature_enc = base64.b64encode(signature)
+        txid = signature_enc[:56]
+
+        print("Encoded Signature: {}".format(signature_enc.decode("utf-8")))
+        print("Transaction ID: {}".format(txid.decode("utf-8")))
+
+        verifier = PKCS1_v1_5.new(wallet.key)
+        if not verifier.verify(sig_dat_hash, signature):
+            raise Exception("Invalid signature was generated")
+
+        tx_submit = (
+            str(timestamp),
+            str(wallet.address),
+            str(recipient),
+            '%.8f' % float (amount),
+            str(signature_enc.decode("utf-8")),
+            str(public_key_hashed.decode("utf-8")),
+            str(operation),
+            str(openfield))
+        reply = self.command("mpinsert", [tx_submit])
+        print("Node responded with: {}".format(reply))
 
 
 if __name__ == "__main__":
